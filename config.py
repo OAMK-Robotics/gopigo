@@ -1,0 +1,5 @@
+# --- Robot Configuration ---
+SPEED = 150
+SAFETY_DISTANCE_MM = 10
+P_GAIN = 35
+P_CENTER_OFFSET = 5
