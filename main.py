@@ -1,45 +1,106 @@
+# Main progrman processes orders and manages robot status
+
 import time
-import init
-import fun
-import config
+import queue
+import threading
+
+from robot_setup import initialize_robot
+from mqtt_client import GopigoMQTTClient
+from navigation import navigate 
+
+
+# IP address of the MQTT broker (the computer running the broker)
+BROKER_HOST = "192.168.1.96" 
+
+# Create an instance of the GopigoMQTTClient
+mqtt_client = GopigoMQTTClient(BROKER_HOST)
 
 def main():
-    gpg, line_follower, distance_sensor, buzzer = init.initialize_robot()
+    # initialize GoPiGo hardware
+    gpg, line_follower, distance_sensor, buzzer = initialize_robot()
 
-    gpg.set_speed(config.SPEED)
-    gpg.forward()
-
-    # True for right branch selection, False for left branch selection
-    choose_right_branch = True
+    # connect to the MQTT broker
+    mqtt_client.connect()
+    
+    stop_event = threading.Event() # event to signal the navigation thread to stop
+    navigation_thread = None # thread to run the navigation function
 
     try:
         while True:
-            dist = distance_sensor.read()
+            try:
+                # get the next message from the queue with timeout allowing checking for stop_event
+                message = mqtt_client.message_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue # no message received, continue to check for stop_event
+            
+            # Process the received MQTT message
+            event = mqtt_client.handle_message(
+                message["topic"],
+                message["payload"]
+            )
+            if event is None:
+                continue
 
-            if dist > config.SAFETY_DISTANCE_MM:
-                p = fun.follow_line_proportional(gpg, line_follower)
+            if event["event"] == "drink-ready":
 
-                # Triggered when a fork is detected (outside the -5 to 5 range)
-                if not (-5 <= p <= 5):
-                    
-                    # --- SELECT THE FUNCTION TO TEST HERE (Uncomment the one you want to use) ---
-                    
-                    # Option 1: Smooth (with proportional line following)
-                    fun.navigate_fork_smooth(gpg, line_follower, turn_right=choose_right_branch)
-                    
-                    # Option 2: Jerky (from the first code using direct gpg.left/right commands)
-                    # fun.navigate_fork_jerky(gpg, line_follower, turn_right=choose_right_branch)
+                order_id = event["order_id"]
+                table_id = event["table_id"]
 
-                time.sleep(0.1)
-            else:
-                fun.handle_obstacle(gpg, buzzer)
-                line_follower.position()  # Reset sensor state after stopping
+                if order_id is None or table_id is None:
+                    print("Invalid drink-ready message")
+                    continue
+
+                # don't start another navigation task while one is running
+                if navigation_thread and navigation_thread.is_alive():
+                    print("GoPiGo is already busy")
+                    continue
+
+                print(f"Starting delivery of order {order_id}")
+                print(f"Destination: table {table_id}")
+
+                mqtt_client.publish_status(
+                    "busy",
+                    current_task="delivering-order",
+                    order_id=order_id
+                )
+
+                # clear stop event before starting navigation
+                stop_event.clear() 
+                # start separate thread for navigation to avoid 
+                # blocking the main thread that handles MQTT messages
+                navigation_thread = threading.Thread(
+                    target=navigate, # function to run in the thread
+                    args=(
+                        gpg,
+                        line_follower,
+                        distance_sensor,
+                        buzzer,
+                        table_id,
+                        stop_event,
+                    )
+                )
+
+                navigation_thread.start()
+            
+            # Handle other events if needed
+            elif event["event"] == "customer-detected":
+                print("GoPiGo received customer-detected event")
+
+            elif event["event"] == "order-completed":
+                print("GoPiGo received order-completed event")
 
     except KeyboardInterrupt:
-        pass
-    finally:
-        gpg.stop()
+        print("Stopping GoPiGo...")
 
+    finally:
+        stop_event.set()
+        # wait for navigation thread to finish
+        if navigation_thread and navigation_thread.is_alive():
+            # join means wait for the thread to finish 
+            navigation_thread.join(timeout=2) 
+        
+        gpg.stop()
+        mqtt_client.disconnect()
 
 if __name__ == "__main__":
     main()
