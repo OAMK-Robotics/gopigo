@@ -1,4 +1,3 @@
-
 import json
 import time
 import queue
@@ -9,10 +8,12 @@ import paho.mqtt.client as mqtt
 
 class GopigoMQTTClient:
 
-    def __init__(self, broker_host, broker_port=1883):
-
+    def __init__(self, broker_host, broker_port=None, username=None, password=None, client_id="gopigo-client"):
+        
         self.broker_host = broker_host
         self.broker_port = broker_port
+        self.username = username
+        self.password = password
 
         self.component = "gopigo"
         self.message_id = 0
@@ -23,7 +24,7 @@ class GopigoMQTTClient:
         # MQTT client
         self.client = mqtt.Client(
             callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
-            client_id="gopigo-client"
+            client_id=client_id
         )
 
         self.client.on_connect = self.on_connect
@@ -65,6 +66,12 @@ class GopigoMQTTClient:
 
         print(f"Connecting to MQTT broker: {self.broker_host}")
 
+        if self.username and self.password:
+            self.client.username_pw_set(
+                self.username, 
+                self.password
+            )
+
         self.client.connect(
             self.broker_host,
             self.broker_port,
@@ -88,7 +95,7 @@ class GopigoMQTTClient:
             qos=1
         )
 
-         # subscribe to Tello events as test
+        # subscribe to Tello events as test
         client.subscribe("restaurant/tello/events/customer-detected", qos=1)
         client.subscribe("restaurant/tello/events/order-completed", qos=1)
 
@@ -131,7 +138,7 @@ class GopigoMQTTClient:
                 "product_id": data.get("product_id"),
                 "pickup_location": data.get("pickup_location")
             }
-        
+
         # tello topics
         elif topic == "restaurant/tello/events/customer-detected":
             order_id = payload.get("order_id")
@@ -256,6 +263,7 @@ class GopigoMQTTClient:
         properties
     ):
         print(f"Disconnected from MQTT broker: {reason_code}")
+        print(f"Disconnect flags: {disconnect_flags}")
 
     # disconnect from broker
     def disconnect(self):
@@ -269,3 +277,4 @@ class GopigoMQTTClient:
         self.client.loop_stop()
 
         print("Disconnected from MQTT broker")
+
